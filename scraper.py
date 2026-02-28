@@ -218,6 +218,7 @@ def main():
         while no_new_count < 12:
             # periodically clear overlays/ads that may appear while scanning
             remove_overlays(driver)
+            start_count = len(page_map)
             page_divs = driver.find_elements(By.CSS_SELECTOR, "div[id^='page'], div[id^='pageMask']")
 
             for div in page_divs:
@@ -306,6 +307,42 @@ def main():
                         except Exception:
                             pass
 
+                    # If no image was found inside this page div, try a proximity fallback:
+                    # look for any <img> on the page whose bounding box overlaps this div.
+                    if not img_src:
+                        try:
+                            div_loc = div.location
+                            div_size = div.size
+                            div_left = div_loc.get('x', 0)
+                            div_top = div_loc.get('y', 0)
+                            div_right = div_left + div_size.get('width', 0)
+                            div_bottom = div_top + div_size.get('height', 0)
+                            imgs_all = driver.find_elements(By.TAG_NAME, 'img')
+                            for it in imgs_all:
+                                try:
+                                    it_loc = it.location
+                                    it_size = it.size
+                                    it_left = it_loc.get('x', 0)
+                                    it_top = it_loc.get('y', 0)
+                                    it_right = it_left + it_size.get('width', 0)
+                                    it_bottom = it_top + it_size.get('height', 0)
+                                    # check overlap
+                                    horiz_overlap = max(0, min(div_right, it_right) - max(div_left, it_left))
+                                    vert_overlap = max(0, min(div_bottom, it_bottom) - max(div_top, it_top))
+                                    if horiz_overlap > 2 and vert_overlap > 2:
+                                        # consider this image as belonging to the div
+                                        for attr in ("src", "data-src", "data-original", "data-lazy-src", "data-url", "data-srcset"):
+                                            val = it.get_attribute(attr)
+                                            if val:
+                                                img_src = val
+                                                break
+                                        if img_src:
+                                            break
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+
                     if not img_src:
                         continue
 
@@ -355,6 +392,51 @@ def main():
                     continue
 
             flips += 1
+            # If this iteration found no new pages, run a quick fallback scan of all <img> elements
+            if len(page_map) == start_count:
+                try:
+                    imgs = driver.find_elements(By.TAG_NAME, 'img')
+                    for it in imgs:
+                        src = None
+                        for attr in ("src", "data-src", "data-original", "data-lazy-src", "data-url", "data-srcset"):
+                            val = it.get_attribute(attr)
+                            if val:
+                                src = val
+                                break
+                        if not src:
+                            continue
+                        # pick from srcset if needed
+                        if ' ' in src and ',' in src:
+                            cand = pick_src_from_srcset(src)
+                            if cand:
+                                src = cand
+                        clean_url = src.split('?')[0]
+                        if clean_url.startswith('//'):
+                            parsed = urlparse(BOOK_URL)
+                            clean_url = f"{parsed.scheme}:{clean_url}"
+                        if not clean_url.startswith('http') and not clean_url.startswith('data:'):
+                            clean_url = urljoin(BOOK_URL, clean_url)
+                        if not (clean_url.startswith('data:') or any(x in clean_url for x in ('/files/', '.jpg', '.webp', '.png', '.jpeg'))):
+                            continue
+                        if clean_url in page_map.values():
+                            continue
+                        # assign to next missing page index
+                        next_page = max(page_map.keys()) + 1 if page_map else 1
+                        while next_page in page_map:
+                            next_page += 1
+                        page_map[next_page] = clean_url
+                        ext = '.webp' if '.webp' in clean_url else ('.jpg' if '.jpg' in clean_url else '.png')
+                        filename = os.path.join(OUTPUT_DIR, f"{next_page:03d}{ext}")
+                        if clean_url.startswith('data:'):
+                            save_data_url(clean_url, filename)
+                            print(f"Fallback (iter) added Page {next_page} -> {os.path.basename(filename)} (saved data URL)")
+                        else:
+                            future = executor.submit(download_image, session, clean_url, filename)
+                            download_futures[next_page] = future
+                            print(f"Fallback (iter) added Page {next_page} -> {os.path.basename(filename)} (queued)")
+                except Exception:
+                    pass
+
             # Move forward to force rendering of later page divs
             try:
                 attempt_flip(driver)
@@ -372,41 +454,44 @@ def main():
                 no_new_count = 0
                 prev_count = len(page_map)
 
-        # Fallback: if some pages may have been missed, scrape all <img> tags and add them
-        print("Fallback: scanning all <img> elements for additional pages...")
-        try:
-            imgs = driver.find_elements(By.TAG_NAME, 'img')
-            for it in imgs:
-                src = None
-                for attr in ("src", "data-src", "data-original", "data-lazy-src", "data-url", "data-srcset"):
-                    val = it.get_attribute(attr)
-                    if val:
-                        src = val
-                        break
-                if not src:
-                    continue
-                clean_url = src.split('?')[0]
-                if clean_url.startswith('//'):
-                    parsed = urlparse(BOOK_URL)
-                    clean_url = f"{parsed.scheme}:{clean_url}"
-                if not clean_url.startswith('http'):
-                    clean_url = urljoin(BOOK_URL, clean_url)
-                if not any(x in clean_url for x in ('/files/', '.jpg', '.webp', '.png', '.jpeg')):
-                    continue
-                if clean_url in page_map.values():
-                    continue
-                next_page = max(page_map.keys()) + 1 if page_map else 1
-                while next_page in page_map:
-                    next_page += 1
-                page_map[next_page] = clean_url
-                ext = '.webp' if '.webp' in clean_url else ('.jpg' if '.jpg' in clean_url else '.png')
-                filename = os.path.join(OUTPUT_DIR, f"{next_page:03d}{ext}")
-                if not os.path.exists(filename):
-                    future = executor.submit(download_image, session, clean_url, filename)
-                    download_futures[next_page] = future
-                    print(f"Fallback added Page {next_page} -> {os.path.basename(filename)} (queued)")
-        except Exception:
-            pass
+        # Fallback: only scan all <img> elements if we discovered no pages earlier
+        if not page_map:
+            print("Fallback: scanning all <img> elements for additional pages...")
+            try:
+                imgs = driver.find_elements(By.TAG_NAME, 'img')
+                for it in imgs:
+                    src = None
+                    for attr in ("src", "data-src", "data-original", "data-lazy-src", "data-url", "data-srcset"):
+                        val = it.get_attribute(attr)
+                        if val:
+                            src = val
+                            break
+                    if not src:
+                        continue
+                    clean_url = src.split('?')[0]
+                    if clean_url.startswith('//'):
+                        parsed = urlparse(BOOK_URL)
+                        clean_url = f"{parsed.scheme}:{clean_url}"
+                    if not clean_url.startswith('http'):
+                        clean_url = urljoin(BOOK_URL, clean_url)
+                    if not any(x in clean_url for x in ('/files/', '.jpg', '.webp', '.png', '.jpeg')):
+                        continue
+                    if clean_url in page_map.values():
+                        continue
+                    next_page = max(page_map.keys()) + 1 if page_map else 1
+                    while next_page in page_map:
+                        next_page += 1
+                    page_map[next_page] = clean_url
+                    ext = '.webp' if '.webp' in clean_url else ('.jpg' if '.jpg' in clean_url else '.png')
+                    filename = os.path.join(OUTPUT_DIR, f"{next_page:03d}{ext}")
+                    if not os.path.exists(filename):
+                        future = executor.submit(download_image, session, clean_url, filename)
+                        download_futures[next_page] = future
+                        print(f"Fallback added Page {next_page} -> {os.path.basename(filename)} (queued)")
+            except Exception:
+                pass
+        else:
+            print("Skipping fallback: images already discovered from page elements.")
 
         # Determine total pages from discovered map
         if page_map:
