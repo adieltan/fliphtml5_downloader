@@ -110,6 +110,32 @@ def attempt_flip(driver):
         except Exception:
             pass
 
+        # 5) try a drag/swipe gesture on the viewer area (right->left)
+        try:
+            viewer_selectors = ['.viewer', '.flipbookViewport', '.flipbook-viewport', '.pageContainer', '.viewer-container', '#viewer', '.book', '.page']
+            for sel in viewer_selectors:
+                try:
+                    el = driver.find_element(By.CSS_SELECTOR, sel)
+                    if not el or not el.is_displayed():
+                        continue
+                    size = el.size
+                    w = int(size.get('width', 0))
+                    h = int(size.get('height', 0))
+                    if w < 20 or h < 20:
+                        continue
+                    # start near right edge, mid height
+                    start_x = int(w * 0.8)
+                    start_y = int(h * 0.5)
+                    move_x = -int(w * 0.6)
+                    # perform click-and-drag
+                    ActionChains(driver).move_to_element_with_offset(el, start_x, start_y).click_and_hold().pause(0.05).move_by_offset(move_x, 0).pause(0.1).release().perform()
+                    time.sleep(0.2)
+                    return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
     except Exception:
         return False
 
