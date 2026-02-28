@@ -19,12 +19,12 @@ Usage
 - Run the scraper with a book URL (it will auto-pick the tab title as the output directory and download pages concurrently):
 
 ```bash
-python fliphtml5/scraper3.py "https://fliphtml5.com/wrgqd/uplf"
+python fliphtml5/scraper.py "https://fliphtml5.com/wrgqd/uplf"
 ```
 
 Output
 - A folder is created with the browser tab title (sanitized) containing downloaded images.
-- A merged PDF named `<output_dir>_final.pdf` is written when complete.
+- A merged PDF named `<output_dir>.pdf` is written when complete.
 
 Notes
 - This tool uses Selenium + webdriver-manager to drive Chrome — the first run will download a chromedriver.
